@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -154,6 +155,10 @@ type TaskInfo struct {
 	NumaInfo *TopologyInfo
 	Pod      *v1.Pod
 
+	// BindAnnotations stores annotations that must be carried to the apiserver during binding.
+	// This scheduler-internal state is concurrency-safe and avoids writes to shared Pod annotations.
+	BindAnnotations *sync.Map // map[string]string
+
 	// CustomBindErrHandler is a custom callback func called when task bind err.
 	CustomBindErrHandler func() error `json:"-"`
 	// CustomBindErrHandlerSucceeded indicates whether CustomBindErrHandler is executed successfully.
@@ -262,6 +267,62 @@ func calSchedulingGated(pod *v1.Pod) bool {
 	return false
 }
 
+func (ti *TaskInfo) AddBindAnnotations(annotations map[string]string) {
+	if ti == nil || len(annotations) == 0 {
+		return
+	}
+	if ti.BindAnnotations == nil {
+		ti.BindAnnotations = &sync.Map{}
+	}
+	for key, value := range annotations {
+		ti.BindAnnotations.Store(key, value)
+	}
+}
+
+func (ti *TaskInfo) DeleteBindAnnotations(keys ...string) {
+	if ti == nil || ti.BindAnnotations == nil || len(keys) == 0 {
+		return
+	}
+	for _, key := range keys {
+		ti.BindAnnotations.Delete(key)
+	}
+}
+
+func (ti *TaskInfo) GetBindAnnotation(key string) (string, bool) {
+	if ti == nil || ti.BindAnnotations == nil {
+		return "", false
+	}
+	value, ok := ti.BindAnnotations.Load(key)
+	if !ok {
+		return "", false
+	}
+	annotation, ok := value.(string)
+	return annotation, ok
+}
+
+func (ti *TaskInfo) ListBindAnnotations() map[string]string {
+	if ti == nil || ti.BindAnnotations == nil {
+		return nil
+	}
+	annotations := map[string]string{}
+	ti.BindAnnotations.Range(func(key, value any) bool {
+		k, ok := key.(string)
+		if !ok {
+			return true
+		}
+		v, ok := value.(string)
+		if !ok {
+			return true
+		}
+		annotations[k] = v
+		return true
+	})
+	if len(annotations) == 0 {
+		return nil
+	}
+	return annotations
+}
+
 func (ti *TaskInfo) SetPodResourceDecision() error {
 	if ti.NumaInfo == nil || len(ti.NumaInfo.ResMap) == 0 {
 		return nil
@@ -277,12 +338,12 @@ func (ti *TaskInfo) SetPodResourceDecision() error {
 		return err
 	}
 
-	metav1.SetMetaDataAnnotation(&ti.Pod.ObjectMeta, topologyDecisionAnnotation, string(layout[:]))
+	ti.AddBindAnnotations(map[string]string{topologyDecisionAnnotation: string(layout)})
 	return nil
 }
 
 func (ti *TaskInfo) UnsetPodResourceDecision() {
-	delete(ti.Pod.Annotations, topologyDecisionAnnotation)
+	ti.DeleteBindAnnotations(topologyDecisionAnnotation)
 }
 
 // Clone is used for cloning a task
@@ -323,6 +384,7 @@ func (ti *TaskInfo) Clone() *TaskInfo {
 	if ti.ResourceClaimDRAResreq != nil {
 		res.ResourceClaimDRAResreq = cloneResourceClaimDRAResreq(ti.ResourceClaimDRAResreq)
 	}
+	res.AddBindAnnotations(ti.ListBindAnnotations())
 
 	return res
 }

@@ -148,17 +148,16 @@ func GetPodResourceNumaInfo(ti *TaskInfo) map[int]v1.ResourceList {
 		return ti.NumaInfo.ResMap
 	}
 
-	if _, ok := ti.Pod.Annotations[topologyDecisionAnnotation]; !ok {
-		return nil
+	if value, ok := ti.GetBindAnnotation(topologyDecisionAnnotation); ok {
+		decision := PodResourceDecision{}
+		err := json.Unmarshal([]byte(value), &decision)
+		if err != nil {
+			return nil
+		}
+		return decision.NUMAResources
 	}
 
-	decision := PodResourceDecision{}
-	err := json.Unmarshal([]byte(ti.Pod.Annotations[topologyDecisionAnnotation]), &decision)
-	if err != nil {
-		return nil
-	}
-
-	return decision.NUMAResources
+	return nil
 }
 
 // AddTask is the function to update the used resource of per numa node

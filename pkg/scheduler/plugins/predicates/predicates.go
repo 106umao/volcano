@@ -90,8 +90,16 @@ const (
 )
 
 var (
-	volumeBindingPluginInstance *vbcap.VolumeBinding
-	volumeBindingPluginOnce     sync.Once
+	volumeBindingPluginInstance  *vbcap.VolumeBinding
+	volumeBindingPluginOnce      sync.Once
+	vgpuAllocationAnnotationKeys = []string{
+		"volcano.sh/vgpu-node",
+		"volcano.sh/vgpu-ids-new",
+		"volcano.sh/devices-to-allocate",
+		"volcano.sh/vgpu-time",
+		"volcano.sh/bind-time",
+		"volcano.sh/bind-phase",
+	}
 )
 
 type PredicatesPlugin struct {
@@ -189,6 +197,37 @@ type BindContextExtension struct {
 	State *k8sframework.CycleState
 }
 
+func syncVGPUPodAnnotations(dst, src *v1.Pod) {
+	if dst == nil || src == nil || src.Annotations == nil {
+		return
+	}
+	for _, key := range vgpuAllocationAnnotationKeys {
+		value, ok := src.Annotations[key]
+		if !ok {
+			continue
+		}
+		if dst.Annotations == nil {
+			dst.Annotations = map[string]string{}
+		}
+		dst.Annotations[key] = value
+	}
+}
+
+func removeVGPUPodAnnotations(pod *v1.Pod) {
+	if pod == nil || pod.Annotations == nil {
+		return
+	}
+	for _, key := range vgpuAllocationAnnotationKeys {
+		delete(pod.Annotations, key)
+	}
+}
+
+func shouldRemoveVGPUPodAnnotationsOnRelease(pod *v1.Pod) bool {
+	return pod != nil &&
+		pod.Annotations != nil &&
+		pod.Annotations["volcano.sh/bind-phase"] != "success"
+}
+
 func (pp *PredicatesPlugin) OnSessionOpen(ssn *framework.Session) {
 	pl := ssn.PodLister
 
@@ -245,6 +284,9 @@ func (pp *PredicatesPlugin) OnSessionOpen(ssn *framework.Session) {
 						event.Err = err
 						return
 					}
+					if val == "hamivgpu" {
+						syncVGPUPodAnnotations(event.Task.Pod, pod)
+					}
 				} else {
 					klog.Warningf("Devices %s assertion conversion failed, skip", val)
 				}
@@ -285,10 +327,14 @@ func (pp *PredicatesPlugin) OnSessionOpen(ssn *framework.Session) {
 					}
 
 					// deallocate pod gpu id
+					shouldRemoveTaskAnnotations := val == "hamivgpu" && shouldRemoveVGPUPodAnnotationsOnRelease(pod)
 					err := devices.Release(ssn.KubeClient(), pod)
 					if err != nil {
 						klog.Errorf("Device %s release failed for pod %s/%s, err:%s", val, pod.Namespace, pod.Name, err.Error())
 						return
+					}
+					if shouldRemoveTaskAnnotations {
+						removeVGPUPodAnnotations(event.Task.Pod)
 					}
 				} else {
 					klog.Warningf("Devices %s assertion conversion failed, skip", val)
