@@ -843,7 +843,7 @@ func TestHAMiReleaseCleansSpeculativeAnnotations(t *testing.T) {
 	client := fake.NewSimpleClientset(pod)
 	ads := &AscendDevices{NodeName: "node-a"}
 
-	if err := ads.Release(client, pod); err != nil {
+	if _, err := ads.Release(client, pod); err != nil {
 		t.Fatalf("Release returned error: %v", err)
 	}
 
@@ -883,7 +883,7 @@ func TestHAMiReleaseKeepsCommittedAnnotations(t *testing.T) {
 	client := fake.NewSimpleClientset(pod)
 	ads := &AscendDevices{NodeName: "node-a"}
 
-	if err := ads.Release(client, pod); err != nil {
+	if _, err := ads.Release(client, pod); err != nil {
 		t.Fatalf("Release returned error: %v", err)
 	}
 	if pod.Annotations[util.AssignedNodeAnnotations] != "node-a" {

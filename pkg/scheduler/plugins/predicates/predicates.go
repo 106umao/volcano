@@ -90,16 +90,8 @@ const (
 )
 
 var (
-	volumeBindingPluginInstance  *vbcap.VolumeBinding
-	volumeBindingPluginOnce      sync.Once
-	vgpuAllocationAnnotationKeys = []string{
-		"volcano.sh/vgpu-node",
-		"volcano.sh/vgpu-ids-new",
-		"volcano.sh/devices-to-allocate",
-		"volcano.sh/vgpu-time",
-		"volcano.sh/bind-time",
-		"volcano.sh/bind-phase",
-	}
+	volumeBindingPluginInstance *vbcap.VolumeBinding
+	volumeBindingPluginOnce     sync.Once
 )
 
 type PredicatesPlugin struct {
@@ -197,37 +189,6 @@ type BindContextExtension struct {
 	State *k8sframework.CycleState
 }
 
-func syncVGPUPodAnnotations(dst, src *v1.Pod) {
-	if dst == nil || src == nil || src.Annotations == nil {
-		return
-	}
-	for _, key := range vgpuAllocationAnnotationKeys {
-		value, ok := src.Annotations[key]
-		if !ok {
-			continue
-		}
-		if dst.Annotations == nil {
-			dst.Annotations = map[string]string{}
-		}
-		dst.Annotations[key] = value
-	}
-}
-
-func removeVGPUPodAnnotations(pod *v1.Pod) {
-	if pod == nil || pod.Annotations == nil {
-		return
-	}
-	for _, key := range vgpuAllocationAnnotationKeys {
-		delete(pod.Annotations, key)
-	}
-}
-
-func shouldRemoveVGPUPodAnnotationsOnRelease(pod *v1.Pod) bool {
-	return pod != nil &&
-		pod.Annotations != nil &&
-		pod.Annotations["volcano.sh/bind-phase"] != "success"
-}
-
 func (pp *PredicatesPlugin) OnSessionOpen(ssn *framework.Session) {
 	pl := ssn.PodLister
 
@@ -278,14 +239,14 @@ func (pp *PredicatesPlugin) OnSessionOpen(ssn *framework.Session) {
 						continue
 					}
 
-					err := devices.Allocate(ssn.KubeClient(), pod)
+					reservation, err := devices.Allocate(ssn.KubeClient(), pod)
 					if err != nil {
 						klog.Errorf("AllocateToPod failed %s", err.Error())
 						event.Err = err
 						return
 					}
-					if val == "hamivgpu" {
-						syncVGPUPodAnnotations(event.Task.Pod, pod)
+					if reservation != nil && len(reservation.Annotations) > 0 {
+						event.Task.AddBindAnnotations(reservation.Annotations)
 					}
 				} else {
 					klog.Warningf("Devices %s assertion conversion failed, skip", val)
@@ -327,14 +288,13 @@ func (pp *PredicatesPlugin) OnSessionOpen(ssn *framework.Session) {
 					}
 
 					// deallocate pod gpu id
-					shouldRemoveTaskAnnotations := val == "hamivgpu" && shouldRemoveVGPUPodAnnotationsOnRelease(pod)
-					err := devices.Release(ssn.KubeClient(), pod)
+					reservation, err := devices.Release(ssn.KubeClient(), pod)
 					if err != nil {
 						klog.Errorf("Device %s release failed for pod %s/%s, err:%s", val, pod.Namespace, pod.Name, err.Error())
 						return
 					}
-					if shouldRemoveTaskAnnotations {
-						removeVGPUPodAnnotations(event.Task.Pod)
+					if keys := reservation.AnnotationKeys(); len(keys) > 0 {
+						event.Task.DeleteBindAnnotations(keys...)
 					}
 				} else {
 					klog.Warningf("Devices %s assertion conversion failed, skip", val)
@@ -927,11 +887,9 @@ func (pp *PredicatesPlugin) PreBindRollBack(ctx context.Context, bindCtx *cache.
 }
 
 func (pp *PredicatesPlugin) SetupBindContextExtension(state *k8sframework.CycleState, bindCtx *cache.BindContext) {
-	if !pp.needsPreBind(bindCtx.TaskInfo) {
-		return
+	if pp.needsPreBind(bindCtx.TaskInfo) {
+		bindCtx.Extensions[pp.Name()] = &BindContextExtension{State: state}
 	}
-
-	bindCtx.Extensions[pp.Name()] = &BindContextExtension{State: state}
 }
 
 func handleSkipPredicatePlugin(state fwk.CycleState, pluginName string) bool {

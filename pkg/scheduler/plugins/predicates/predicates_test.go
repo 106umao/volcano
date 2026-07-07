@@ -124,116 +124,35 @@ func getWorkerAffinity() *apiv1.Affinity {
 	}
 }
 
-func TestSyncVGPUPodAnnotations(t *testing.T) {
-	dst := &apiv1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Annotations: map[string]string{
-				"keep": "dst",
-			},
-		},
-	}
-	src := &apiv1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Annotations: map[string]string{
-				"volcano.sh/vgpu-node":           "node-a",
-				"volcano.sh/vgpu-ids-new":        "gpu-a",
-				"volcano.sh/devices-to-allocate": "gpu-a",
-				"volcano.sh/vgpu-time":           "123",
-				"volcano.sh/bind-time":           "456",
-				"volcano.sh/bind-phase":          "allocating",
-				"other":                          "src",
-			},
-		},
+// TestTaskBindAnnotations verifies device allocation annotations flow through
+// TaskInfo's concurrency-safe bind annotation helpers.
+func TestTaskBindAnnotations(t *testing.T) {
+	task := &api.TaskInfo{}
+
+	task.AddBindAnnotations(map[string]string{
+		"volcano.sh/vgpu-node":    "node-a",
+		"volcano.sh/vgpu-ids-new": "gpu-a",
+	})
+	got := task.ListBindAnnotations()
+	if got["volcano.sh/vgpu-node"] != "node-a" {
+		t.Fatalf("expected vgpu-node=node-a, got %q", got["volcano.sh/vgpu-node"])
 	}
 
-	syncVGPUPodAnnotations(dst, src)
-
-	for _, key := range vgpuAllocationAnnotationKeys {
-		if dst.Annotations[key] != src.Annotations[key] {
-			t.Fatalf("expected annotation %s=%q, got %q", key, src.Annotations[key], dst.Annotations[key])
-		}
-	}
-	if dst.Annotations["other"] != "" {
-		t.Fatalf("expected unrelated annotation not copied, got %q", dst.Annotations["other"])
-	}
-	if dst.Annotations["keep"] != "dst" {
-		t.Fatalf("expected existing unrelated annotation preserved, got %q", dst.Annotations["keep"])
-	}
-}
-
-func TestRemoveVGPUPodAnnotations(t *testing.T) {
-	pod := &apiv1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Annotations: map[string]string{
-				"volcano.sh/vgpu-node":           "node-a",
-				"volcano.sh/vgpu-ids-new":        "gpu-a",
-				"volcano.sh/devices-to-allocate": "gpu-a",
-				"volcano.sh/vgpu-time":           "123",
-				"volcano.sh/bind-time":           "456",
-				"volcano.sh/bind-phase":          "allocating",
-				"keep":                           "value",
-			},
-		},
+	task.AddBindAnnotations(map[string]string{
+		"volcano.sh/vgpu-node": "node-b",
+	})
+	got = task.ListBindAnnotations()
+	if got["volcano.sh/vgpu-node"] != "node-b" {
+		t.Fatalf("expected vgpu-node overwritten to node-b, got %q", got["volcano.sh/vgpu-node"])
 	}
 
-	removeVGPUPodAnnotations(pod)
-
-	for _, key := range vgpuAllocationAnnotationKeys {
-		if _, ok := pod.Annotations[key]; ok {
-			t.Fatalf("expected annotation %s removed", key)
-		}
+	task.DeleteBindAnnotations("volcano.sh/vgpu-node")
+	got = task.ListBindAnnotations()
+	if _, ok := got["volcano.sh/vgpu-node"]; ok {
+		t.Fatalf("expected vgpu-node removed")
 	}
-	if pod.Annotations["keep"] != "value" {
-		t.Fatalf("expected unrelated annotation preserved, got %q", pod.Annotations["keep"])
-	}
-}
-
-func TestShouldRemoveVGPUPodAnnotationsOnRelease(t *testing.T) {
-	tests := []struct {
-		name string
-		pod  *apiv1.Pod
-		want bool
-	}{
-		{
-			name: "success phase keeps committed annotations",
-			pod: &apiv1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-				"volcano.sh/bind-phase": "success",
-			}}},
-			want: false,
-		},
-		{
-			name: "allocating phase removes speculative annotations",
-			pod: &apiv1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-				"volcano.sh/bind-phase": "allocating",
-			}}},
-			want: true,
-		},
-		{
-			name: "missing annotations does not remove",
-			pod:  &apiv1.Pod{},
-			want: false,
-		},
-		{
-			name: "missing bind phase removes speculative annotations",
-			pod: &apiv1.Pod{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-				"volcano.sh/vgpu-node": "node-a",
-			}}},
-			want: true,
-		},
-		{
-			name: "nil pod does not remove",
-			pod:  nil,
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := shouldRemoveVGPUPodAnnotationsOnRelease(tt.pod)
-			if got != tt.want {
-				t.Fatalf("expected %v, got %v", tt.want, got)
-			}
-		})
+	if got["volcano.sh/vgpu-ids-new"] != "gpu-a" {
+		t.Fatalf("expected unrelated bind annotation preserved")
 	}
 }
 
